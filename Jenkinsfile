@@ -2,12 +2,11 @@ pipeline {
     agent any
     
     environment {
-        AWS_REGION = 'us-east-1'
         APP_NAME = 'devops-demo-app'
-        EC2_INSTANCE_IP = credentials('ec2-instance-ip')
-        EC2_USER = 'ec2-user'
-        EC2_KEY = credentials('ec2-ssh-key')
-        DEPLOY_PATH = '/home/ec2-user/app'
+        VM_INSTANCE_IP = credentials('vm-instance-ip')
+        VM_USER = credentials('vm-ssh-user')
+        VM_KEY = credentials('vm-ssh-key')
+        DEPLOY_PATH = '/home/azureuser/app'
     }
     
     stages {
@@ -60,9 +59,9 @@ pipeline {
             }
         }
         
-        stage('Deploy to EC2') {
+        stage('Deploy to VM') {
             steps {
-                echo 'Deploying application to AWS EC2 instance...'
+                echo 'Deploying application to Azure VM...'
                 script {
                     def sshCommand = """
                         # Create deployment directory
@@ -70,16 +69,19 @@ pipeline {
                         
                         # Stop existing application if running
                         pkill -f 'gunicorn.*app:app' || true
+                        sleep 2
                         
                         # Extract application files
                         cd ${DEPLOY_PATH}
                         tar -xzf ${APP_NAME}-${BUILD_NUMBER}.tar.gz
                         
                         # Create virtual environment and install dependencies
-                        python3 -m venv venv
+                        if [ ! -d "venv" ]; then
+                            python3 -m venv venv
+                        fi
                         source venv/bin/activate
-                        pip install --upgrade pip
-                        pip install -r requirements.txt
+                        pip install --upgrade pip --quiet
+                        pip install -r requirements.txt --quiet
                         
                         # Start application with Gunicorn
                         nohup gunicorn -w 2 -b 0.0.0.0:5000 app:app > app.log 2>&1 &
@@ -89,19 +91,21 @@ pipeline {
                         curl -f http://localhost:5000/health || exit 1
                     """
                     
-                    // Copy package to EC2
+                    // Copy package to VM
                     sh """
                         scp -o StrictHostKeyChecking=no \
-                            -i ${EC2_KEY} \
+                            -o UserKnownHostsFile=/dev/null \
+                            -i ${VM_KEY} \
                             dist/${APP_NAME}-${BUILD_NUMBER}.tar.gz \
-                            ${EC2_USER}@${EC2_INSTANCE_IP}:${DEPLOY_PATH}/
+                            ${VM_USER}@${VM_INSTANCE_IP}:${DEPLOY_PATH}/
                     """
                     
-                    // Execute deployment commands on EC2
+                    // Execute deployment commands on VM
                     sh """
                         ssh -o StrictHostKeyChecking=no \
-                            -i ${EC2_KEY} \
-                            ${EC2_USER}@${EC2_INSTANCE_IP} \
+                            -o UserKnownHostsFile=/dev/null \
+                            -i ${VM_KEY} \
+                            ${VM_USER}@${VM_INSTANCE_IP} \
                             '${sshCommand}'
                     """
                 }
@@ -113,8 +117,8 @@ pipeline {
                 echo 'Verifying deployment...'
                 sh """
                     sleep 10
-                    curl -f http://${EC2_INSTANCE_IP}:5000/health || exit 1
-                    curl -f http://${EC2_INSTANCE_IP}:5000/ | grep -q success || exit 1
+                    curl -f http://${VM_INSTANCE_IP}:5000/health || exit 1
+                    curl -f http://${VM_INSTANCE_IP}:5000/ | grep -q success || exit 1
                 """
             }
         }
